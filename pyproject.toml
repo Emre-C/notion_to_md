@@ -42,4 +42,4 @@ reportMissingImports = true
 reportInvalidTypeForm = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/notion_to_md"]
+packages = ["notion_to_md"]

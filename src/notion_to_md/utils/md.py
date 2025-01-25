@@ -71,6 +71,42 @@ def underline(text: str) -> str:
     """Format text as underline."""
     return f"<u>{text}</u>"
 
+def color(text: str, color_value: str) -> str:
+    """Format text with color.
+    
+    Args:
+        text: The text to color
+        color_value: The color value from Notion (e.g., 'red', 'blue', 'gray', etc.)
+        
+    Returns:
+        Text wrapped in HTML span with appropriate color class
+    """
+    # Map Notion colors to CSS classes
+    color_map = {
+        "default": "default",
+        "gray": "gray",
+        "brown": "brown",
+        "orange": "orange",
+        "yellow": "yellow",
+        "green": "green",
+        "blue": "blue",
+        "purple": "purple",
+        "pink": "pink",
+        "red": "red",
+        "gray_background": "gray-background",
+        "brown_background": "brown-background",
+        "orange_background": "orange-background",
+        "yellow_background": "yellow-background",
+        "green_background": "green-background",
+        "blue_background": "blue-background",
+        "purple_background": "purple-background",
+        "pink_background": "pink-background",
+        "red_background": "red-background"
+    }
+    
+    css_class = color_map.get(color_value, "default")
+    return f'<span class="notion-{css_class}">{text}</span>'
+
 def link(text: str, href: str) -> str:
     """Format text as link."""
     return f"[{text}]({href})"

@@ -58,6 +58,8 @@ class NotionToMarkdown:
             text = md.strikethrough(text)
         if annotations["code"]:
             text = md.inline_code(text)
+        if annotations["color"] and annotations["color"] != "default":
+            text = md.color(text, annotations["color"])
         return text
 
     async def block_to_markdown(self, block: Dict) -> str:

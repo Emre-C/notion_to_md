@@ -74,6 +74,12 @@ class TestTextAnnotations:
         assert md.strikethrough("") == "~~~~"
         assert md.underline("") == "<u></u>"
 
+    def test_color(self):
+        assert md.color("text", "red") == '<span class="notion-red">text</span>'
+        assert md.color("text", "blue_background") == '<span class="notion-blue-background">text</span>'
+        assert md.color("text", "default") == '<span class="notion-default">text</span>'
+        assert md.color("text", "invalid_color") == '<span class="notion-default">text</span>'
+
 class TestHeadings:
     def test_heading1(self):
         assert md.heading1("simple text") == "# simple text"
@@ -167,6 +173,10 @@ def test_text_annotations():
     assert md.italic("text") == "_text_"
     assert md.strikethrough("text") == "~~text~~"
     assert md.underline("text") == "<u>text</u>"
+    assert md.color("text", "red") == '<span class="notion-red">text</span>'
+    assert md.color("text", "blue_background") == '<span class="notion-blue-background">text</span>'
+    assert md.color("text", "default") == '<span class="notion-default">text</span>'
+    assert md.color("text", "invalid_color") == '<span class="notion-default">text</span>'
 
 def test_code_blocks():
     assert md.code_block("console.log()", "javascript") == "```javascript\nconsole.log()\n```"
