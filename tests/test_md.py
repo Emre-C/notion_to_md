@@ -1,8 +1,8 @@
 import pytest
-from src.notion_to_md.utils import md
+from python_notion_to_md.utils import md
 import aiohttp
 from unittest.mock import patch, Mock
-from src.notion_to_md.notion_to_md import NotionToMarkdown
+from python_notion_to_md.python_notion_to_md import NotionToMarkdown
 import unittest
 from notion_client import Client
 

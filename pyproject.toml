@@ -3,11 +3,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "notion_to_md"
+name = "python_notion_to_md"
 version = "0.1.0"
 description = "Convert Notion pages to Markdown - Python port of notion-to-md"
 authors = [
-  {name = "Emre-C", email = "emre.coklar@gmail.com"}
+  {name = "Emre Coklar", email = "emre.coklar@gmail.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.8"
@@ -18,5 +18,5 @@ dependencies = [
 ]
 
 packages = [
-  { include = "notion_to_md", from = "src" }
+  { include = "python_notion_to_md", from = "src" }
 ]
