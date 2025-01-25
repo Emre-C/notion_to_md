@@ -8,17 +8,21 @@ class ConfigurationOptions(TypedDict):
     api_rate_limit_delay: float
     max_concurrent_requests: int
 
+CustomTransformer = Callable[[Dict[str, Any]], Optional[Union[str, bool]]]
+
 class SyncedBlock(TypedDict):
     synced_from: Optional[Dict[str, str]]
     
 class ChildDatabase(TypedDict):
     title: str
 
-class MdBlock(TypedDict, total=False):
-    type: Optional[str]
-    block_id: str
-    parent: str
-    children: List['MdBlock']
+# class MdBlock(TypedDict):
+#     type: str
+#     block_id: str
+#     parent: str
+#     children: List['MdBlock']
+
+MdBlock = Dict[str, Any]
 
 class Annotations(TypedDict):
     bold: bool
@@ -48,8 +52,6 @@ class CalloutIcon(TypedDict, total=False):
     external: Optional[Dict[str, str]]
     file: Optional[Dict[str, str]]
 
-CustomTransformer = Callable[[Dict], Union[str, bool, None]]
-
 BlockType = Literal[
     "paragraph", "heading_1", "heading_2", "heading_3",
     "bulleted_list_item", "numbered_list_item", "quote",
@@ -60,6 +62,7 @@ BlockType = Literal[
     "child_database", "breadcrumb", "template", "unsupported"
 ]
 
+# These TypedDicts remain here for possible future usage
 class ListBlockChildrenResponseResult(TypedDict, total=False):
     synced_block: Dict[str, Any]
     child_database: Dict[str, Any]
@@ -67,4 +70,4 @@ class ListBlockChildrenResponseResult(TypedDict, total=False):
     video: Dict[str, Any]
     pdf: Dict[str, Any]
     
-ListBlockChildrenResponseResults = List[ListBlockChildrenResponseResult]
+ListBlockChildrenResponseResults = List[MdBlock]

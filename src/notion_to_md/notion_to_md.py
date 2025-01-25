@@ -1,16 +1,9 @@
-from typing import Dict, List, Optional, Any, Union, Callable
+from typing import Dict, List, Optional, Any
 import logging
 from notion_client import Client
 
-from .utils import md, notion
-from .utils.types import (
-    ConfigurationOptions, 
-    MdBlock,
-    CustomTransformer,
-    ListBlockChildrenResponseResult,
-    ListBlockChildrenResponseResults,
-    Annotations
-)
+from .utils import md, notion, ConfigurationOptions, MdBlock, CustomTransformer, Annotations
+
 
 class NotionToMarkdown:
     """Converts a Notion page to Markdown."""
@@ -38,7 +31,7 @@ class NotionToMarkdown:
             max_concurrent_requests=5
         )
         self.config = config or default_config
-        self.custom_transformers: Dict[str, Optional[Callable[[Dict], Union[str, bool, None]]]] = {}
+        self.custom_transformers: Dict[str, Optional[CustomTransformer]] = {}
         
         # Setup logging
         self.logger = logging.getLogger("notion2md")
@@ -55,17 +48,32 @@ class NotionToMarkdown:
         'audio', 'embed'
     ]
 
+    def annotate_plain_text(self, text: str, annotations: Annotations) -> str:
+        """Apply text formatting annotations"""
+        if annotations["bold"]:
+            text = md.bold(text)
+        if annotations["italic"]:
+            text = md.italic(text)
+        if annotations["strikethrough"]:
+            text = md.strikethrough(text)
+        if annotations["code"]:
+            text = md.inline_code(text)
+        return text
+
     async def block_to_markdown(self, block: Dict) -> str:
         """Convert a single block to markdown."""
         if not isinstance(block, dict) or "type" not in block:
             return ""
             
         block_type = block.get("type")
+        if not isinstance(block_type, str):
+            return ""
         if block_type not in self.VALID_BLOCK_TYPES:
             raise ValueError(f"Invalid block type: {block_type}")
             
-        if block_type in self.custom_transformers and self.custom_transformers[block_type]:
-            result = await self.custom_transformers[block_type](block)
+        transformer = self.custom_transformers.get(block_type)
+        if transformer is not None:
+            result = transformer(block)
             if isinstance(result, str):
                 return result
             return ""
@@ -73,9 +81,11 @@ class NotionToMarkdown:
         parsed_data = ""
         
         # Handle text-based blocks
-        if block_type in ["paragraph", "heading_1", "heading_2", "heading_3", 
-                         "bulleted_list_item", "numbered_list_item", "quote",
-                         "to_do", "toggle", "callout"]:
+        if block_type in [
+            "paragraph", "heading_1", "heading_2", "heading_3",
+            "bulleted_list_item", "numbered_list_item", "quote",
+            "to_do", "toggle", "callout"
+        ]:
             block_content = block.get(block_type, {}).get("rich_text", [])
             for content in block_content:
                 if content["type"] == "equation":
@@ -102,9 +112,16 @@ class NotionToMarkdown:
             
         elif block_type == "image":
             caption = "".join(t["plain_text"] for t in block["image"].get("caption", []))
-            url = (block["image"]["file"]["url"] if block["image"]["type"] == "file" 
-                  else block["image"]["external"]["url"])
-            parsed_data = await md.image(caption or "image", url, self.config.convert_images_to_base64)
+            url = (
+                block["image"]["file"]["url"]
+                if block["image"]["type"] == "file"
+                else block["image"]["external"]["url"]
+            )
+            parsed_data = await md.image(
+                caption or "image",
+                url,
+                self.config["convert_images_to_base64"]
+            )
             
         elif block_type == "table":
             table_rows = []
@@ -117,15 +134,15 @@ class NotionToMarkdown:
             parsed_data = md.table(table_rows)
             
         elif block_type == "child_page":
-            if self.config.parse_child_pages:
+            if self.config["parse_child_pages"]:
                 title = block["child_page"].get("title", "")
-                parsed_data = md.heading2(title) if not self.config.separate_child_page else title
+                parsed_data = md.heading2(title) if not self.config["separate_child_page"] else title
                 
         elif block_type == "synced_block":
             parsed_data = await self.handle_synced_block(block)
             
         elif block_type == "child_database":
-            if not self.config.parse_child_pages:
+            if not self.config["parse_child_pages"]:
                 return ""
             title = block["child_database"].get("title", "Child Database")
             return md.heading3(title)
@@ -161,17 +178,31 @@ class NotionToMarkdown:
             self.logger.warning("Synced block recursion depth exceeded")
             return ""
             
-        synced_from = block.get("synced_block", {}).get("synced_from")
-        if not synced_from or not synced_from.get("block_id"):
+        synced_block = block.get("synced_block", {})
+        synced_from = synced_block.get("synced_from")
+
+        if not synced_from:
+            # e.g. log warning or return early
             self.logger.warning("Synced block has no source")
             return ""
 
-        # Fetch content from original block
-        original_blocks = await notion.get_block_children(
-            self.notion_client,
-            synced_from["block_id"]
-        )
-        return await self.to_markdown_string(original_blocks, nesting_level=depth+1)
+        # Ensure it's a dict:
+        if not isinstance(synced_from, dict):
+            self.logger.warning("synced_from is not a dict")
+            return ""
+
+        # Now safely access block_id
+        block_id = synced_from.get("block_id")
+        if not isinstance(block_id, str):
+            # either block_id is None or not a string
+            self.logger.warning("Synced block has no valid 'block_id'")
+            return ""
+
+        # At this point, block_id is definitely a string,
+        # so Pylance won't complain about the 'Unknown | None' type
+        original_blocks = await notion.get_block_children(self.notion_client, block_id)
+        md_dict = await self.to_markdown_string(original_blocks, nesting_level=depth+1)
+        return md_dict.get("parent", "")
 
     def handle_child_database(self, block: Dict) -> str:
         """Convert child database to markdown table structure"""
@@ -182,15 +213,6 @@ class NotionToMarkdown:
         ])
 
     def set_custom_transformer(self, block_type: str, transformer: CustomTransformer) -> "NotionToMarkdown":
-        """Set a custom transformer for a specific block type.
-        
-        Args:
-            block_type: The type of block to transform
-            transformer: The transformer function
-            
-        Returns:
-            self for method chaining
-        """
         self.custom_transformers[block_type] = transformer
         return self
 
@@ -244,7 +266,7 @@ class NotionToMarkdown:
                     child_page_title = block["parent"]
                     md_str = await self.to_markdown_string(block["children"], child_page_title)
                     
-                    if self.config.separate_child_page:
+                    if self.config["separate_child_page"]:
                         md_output.update(md_str)
                     else:
                         md_output[page_identifier] = md_output.get(page_identifier, "")
@@ -282,11 +304,11 @@ class NotionToMarkdown:
         return md_output
 
     async def blocks_to_markdown(
-        self, 
-        blocks: Optional[List[Dict]] = None, 
+        self,
+        blocks: Optional[List[Dict[str, Any]]] = None, 
         total_pages: Optional[int] = None,
-        md_blocks: Optional[List[MdBlock]] = None
-    ) -> List[MdBlock]:
+        md_blocks: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
         """Convert Notion blocks to markdown blocks.
         
         Args:
@@ -304,13 +326,26 @@ class NotionToMarkdown:
         
         for block in blocks:
             if (block["type"] == "unsupported" or 
-                (block["type"] == "child_page" and not self.config.parse_child_pages)):
+                (block["type"] == "child_page" and not self.config["parse_child_pages"])):
                 continue
                 
             if block.get("has_children"):
-                block_id = (block["synced_block"]["synced_from"]["block_id"] 
-                          if block["type"] == "synced_block" and block["synced_block"].get("synced_from")
-                          else block["id"])
+                if block["type"] == "synced_block":
+                    synced_block_data = block.get("synced_block")
+                    if isinstance(synced_block_data, dict):
+                        synced_from_data = synced_block_data.get("synced_from")
+                        if isinstance(synced_from_data, dict):
+                            possible_id = synced_from_data.get("block_id")
+                            if isinstance(possible_id, str):
+                                block_id = possible_id
+                            else:
+                                block_id = block["id"]
+                        else:
+                            block_id = block["id"]
+                    else:
+                        block_id = block["id"]
+                else:
+                    block_id = block["id"]
                           
                 child_blocks = await notion.get_block_children(
                     self.notion_client,

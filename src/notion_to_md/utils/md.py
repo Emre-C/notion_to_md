@@ -5,8 +5,7 @@ import logging
 from typing import List, Optional, Dict
 import re
 from contextlib import asynccontextmanager
-import aiohttp
-from aiohttp import ClientTimeout
+from aiohttp import ClientTimeout, ClientSession
 from .types import CalloutIcon
 
 # Pre-compile regex pattern
@@ -19,7 +18,7 @@ logger = logging.getLogger(__name__)
 async def get_client_session():
     """Create and manage aiohttp client session."""
     timeout = ClientTimeout(total=30)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with ClientSession(timeout=timeout) as session:
         yield session
 
 async def image_to_base64(url: str) -> str:
@@ -230,7 +229,9 @@ def callout(text: str, icon: Optional[CalloutIcon] = None) -> str:
         if icon.get("type") == "emoji":
             icon_str = f"{icon.get('emoji', '')} "
         elif icon.get("type") in ["external", "file"]:
-            url = icon.get("external", {}).get("url") or icon.get("file", {}).get("url", "")
+            external_data = icon.get("external") or {}
+            file_data = icon.get("file") or {}
+            url = external_data.get("url") or file_data.get("url", "")
             if url:
                 icon_str = f"![icon]({url}) "
     
@@ -241,6 +242,5 @@ def callout(text: str, icon: Optional[CalloutIcon] = None) -> str:
         heading_content = heading_match.group(2)
         return f"> {'#' * heading_level} {icon_str}{heading_content}"
     
-    # Handle multiline text
     formatted_text = text.replace('\n', '\n> ')
     return f"> {icon_str}{formatted_text}"
