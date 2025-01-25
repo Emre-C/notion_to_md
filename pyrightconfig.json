@@ -1,0 +1,8 @@
+{
+    "include": ["src"],
+    "extraPaths": ["src"],
+    "typeCheckingMode": "basic",
+    "useLibraryCodeForTypes": true,
+    "reportMissingImports": true,
+    "reportMissingTypeStubs": false
+} 
