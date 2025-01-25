@@ -1,5 +1,5 @@
 """
-notion-to-md - Convert Notion blocks to Markdown
+notion_to_md - Convert Notion blocks to Markdown
 """
 
 from .notion_to_md import NotionToMarkdown
@@ -9,4 +9,4 @@ __version__ = "0.1.0"
 __all__ = [
     "NotionToMarkdown",
     "ConfigurationOptions"
-]  # Explicitly define what's available for import
+]

@@ -18,7 +18,7 @@ A Python library to convert Notion blocks into Markdown formatted text. This is 
 ## Installation
 
 ```bash
-pip install python-notion-to-md
+pip install notion_to_md
 ```
 
 ## Quickstart Guide

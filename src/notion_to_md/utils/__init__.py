@@ -1,5 +1,5 @@
 """
-Utility modules for notion-to-md
+Utility modules for notion_to_md
 """
 
 from .types import (
