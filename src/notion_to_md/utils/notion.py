@@ -1,8 +1,8 @@
 from typing import List, Dict, Optional, Any
 import logging
 from notion_client import Client
-from notion_client.errors import APIResponseError
-from utils.types import ListBlockChildrenResponseResults
+from notion_client.errors import APIResponseError, APIErrorCode
+from .types import ListBlockChildrenResponseResults
 from tenacity import retry, wait_exponential, stop_after_attempt
 
 # Configure logging
@@ -48,7 +48,12 @@ async def get_block_children(
             
             if not isinstance(response, dict) or "results" not in response:
                 logger.error(f"Unexpected API response structure for block {block_id}")
-                raise APIResponseError("Invalid API response structure")
+                # Let Notion client handle the error since we can't create a proper Response object
+                raise APIResponseError(
+                    None,  # type: ignore
+                    "Invalid API response structure",
+                    APIErrorCode.InvalidRequest
+                )
                 
             result.extend(response["results"])
             logger.debug(f"Fetched {len(response['results'])} blocks for block {block_id}")

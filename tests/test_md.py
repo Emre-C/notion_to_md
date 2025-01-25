@@ -4,10 +4,12 @@ import aiohttp
 from unittest.mock import patch, Mock
 from src.notion_to_md.notion_to_md import NotionToMarkdown
 import unittest
+from notion_client import Client
 
 @pytest.fixture
 def notion_to_md():
-    return NotionToMarkdown(notion_client=None)  # Mock client for testing
+    mock_client = Mock(spec=Client)
+    return NotionToMarkdown(notion_client=mock_client)
 
 class TestCallout:
     def test_callout_without_emoji(self):
@@ -317,7 +319,7 @@ class TestCustomTransformers(unittest.TestCase):
 
     async def test_custom_transformer_implementation(self):
         """Test that customTransformer implementation works"""
-        async def custom_transformer_mock(block):
+        def custom_transformer_mock(block):
             return "hello"
             
         self.n2m.set_custom_transformer("divider", custom_transformer_mock)
@@ -333,7 +335,7 @@ class TestCustomTransformers(unittest.TestCase):
 
     async def test_custom_transformer_default_implementation(self):
         """Test that customTransformer default implementation works"""
-        async def custom_transformer_mock(block):
+        def custom_transformer_mock(block):
             return False
             
         self.n2m.set_custom_transformer("divider", custom_transformer_mock)
