@@ -20,6 +20,10 @@ class ValidationError(NotionParseError):
     """Raised when content fails validation checks."""
     pass
 
+class TableFormatError(NotionParseError):
+    """Raised when table structure is invalid or inconsistent."""
+    pass
+
 class UnsupportedFeatureError(NotionParseError):
     """Raised when a feature is not fully supported or has known limitations."""
     def __init__(self, message: str, block=None, feature_name: str = None, limitation_details: str = None):

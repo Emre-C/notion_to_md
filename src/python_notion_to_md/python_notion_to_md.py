@@ -3,7 +3,7 @@ import logging
 from notion_client import Client
 
 from .utils import md, notion, ConfigurationOptions, MdBlock, CustomTransformer, Annotations
-from .utils.exceptions import NotionParseError, UnhandledContentError, EmptyContentError, ValidationError
+from .utils.exceptions import NotionParseError, UnhandledContentError, EmptyContentError, ValidationError, TableFormatError
 
 
 class NotionToMarkdown:
@@ -181,7 +181,7 @@ class NotionToMarkdown:
             if block_type in [
                 "paragraph", "heading_1", "heading_2", "heading_3",
                 "bulleted_list_item", "numbered_list_item", "quote",
-                "to_do", "toggle", "callout"
+                "to_do", "callout"  # Removed toggle from here as it needs special handling
             ]:
                 block_content = block.get(block_type, {}).get("rich_text", [])
                 for content in block_content:
@@ -212,13 +212,6 @@ class NotionToMarkdown:
                 elif block_type == "to_do":
                     checked = block.get(block_type, {}).get("checked", False)
                     parsed_data = md.todo(parsed_data, checked)
-                elif block_type == "toggle":
-                    # TODO: Improve toggle block handling
-                    # Current limitations:
-                    # - Nested toggles might not be properly handled
-                    # - Complex content within toggles needs verification
-                    # - Pagination for toggle children not implemented
-                    parsed_data = md.toggle(parsed_data, "Content hidden (toggle support limited)")
 
             # Handle specific block types
             if block_type == "code":
@@ -306,23 +299,28 @@ class NotionToMarkdown:
                 parsed_data = md.link(url, url)  # Use URL as both text and link
 
             elif block_type == "table":
-                # TODO: Improve table handling
-                # Current limitations:
-                # - Column header support needed
-                # - Complex formatting within cells needs verification
-                # - Empty cell handling needs improvement
-                try:
-                    rows = []
-                    for row in block.get("table", {}).get("rows", []):
-                        cells = []
-                        for cell in row.get("cells", []):
-                            cell_text = "".join(t["plain_text"] for t in cell)
-                            cells.append(cell_text)
-                        rows.append(cells)
-                    parsed_data = md.table(rows)
-                except Exception as e:
-                    self.logger.error(f"Failed to process table: {str(e)}")
-                    return "Table content (processing failed)"
+                parsed_data = await self.handle_table_block(block)
+                
+            elif block_type == "toggle":
+                # Get toggle text
+                toggle_text = "".join(
+                    text.get("plain_text", "") 
+                    for text in block.get("toggle", {}).get("rich_text", [])
+                )
+                
+                # Get children content if any
+                children_content = ""
+                if block.get("has_children"):
+                    child_blocks = await notion.get_block_children(self.notion_client, block["id"])
+                    child_md_blocks = await self.blocks_to_markdown(child_blocks)
+                    child_md = await self.to_markdown_string(child_md_blocks)
+                    children_content = child_md.get("parent", "")
+                
+                parsed_data = f"""<details>
+<summary>{toggle_text or "Toggle"}</summary>
+
+{children_content}
+</details>"""
 
             elif block_type == "column_list":
                 # Handle columns as a container
@@ -544,6 +542,9 @@ class NotionToMarkdown:
             
         md_blocks = md_blocks or []
         
+        # Update numbered list indices before processing
+        notion.update_numbered_list_indices(blocks)
+        
         for block in blocks:
             if (block["type"] == "unsupported" or 
                 (block["type"] == "child_page" and not self.config["parse_child_pages"])):
@@ -662,8 +663,11 @@ class NotionToMarkdown:
                 self._track_http_request(f"pages/{page_id}")
                 page = await self.notion_client.pages.retrieve(page_id=page_id)
                 title = page.get('properties', {}).get('title', {}).get('title', [{}])[0].get('plain_text', 'Untitled')
-                url = page.get('url', '')
-                last_edited = page.get('last_edited_time', '')
+                
+                # Skip empty pages
+                if not title.strip():
+                    self.logger.warning(f"⚠ Skipped empty page: {page_id}")
+                    return []
                 
                 # Create frontmatter block
                 frontmatter = {
@@ -671,8 +675,6 @@ class NotionToMarkdown:
                     "block_id": "frontmatter",
                     "parent": f"""---
 title: {title}
-notion_url: {url}
-last_edited: {last_edited}
 ---
 
 """,
@@ -693,6 +695,12 @@ last_edited: {last_edited}
             
             # Get page blocks
             blocks = await notion.get_block_children(self.notion_client, page_id, total_pages)
+            
+            # Skip if no content
+            if not blocks and not title_block:
+                self.logger.warning(f"⚠ Skipped empty page: {page_id}")
+                return []
+                
             result = await self.blocks_to_markdown(blocks)
             
             # Insert frontmatter and title blocks at the beginning if available
@@ -702,7 +710,8 @@ last_edited: {last_edited}
                 result.insert(1 if frontmatter else 0, title_block)
             
             # Log conversion report
-            self.logger.info("\n" + self.generate_conversion_report())
+            if self.config.get('debug_mode'):
+                self.logger.info("\n" + self.generate_conversion_report())
             
             return result
             
@@ -732,3 +741,76 @@ last_edited: {last_edited}
             'unhandled_types': list(self._stats['unhandled_types']),
             'http_requests': self._stats['http_requests']
         }
+
+    def format_cell_text(self, rich_texts: List[Dict]) -> str:
+        """Format cell text with proper annotations."""
+        formatted = []
+        for rt in rich_texts:
+            text = rt.get("plain_text", "")
+            annotations = rt.get("annotations", {})
+            formatted.append(self.annotate_plain_text(text, annotations))
+        return " ".join(formatted)
+
+    def validate_table(self, rows: List[List[str]]) -> None:
+        """Validate table structure for consistency."""
+        if not rows:
+            raise TableFormatError("Empty table", None)
+            
+        col_counts = {len(row) for row in rows}
+        if len(col_counts) > 1:
+            raise TableFormatError(f"Inconsistent column counts: {col_counts}", None)
+
+    async def handle_table_block(self, block: Dict) -> str:
+        """Convert a table block to markdown."""
+        try:
+            table_data = block.get("table", {})
+            rows = []
+            
+            # Process each row
+            for row in table_data.get("rows", []):
+                cells = []
+                for cell in row.get("cells", []):
+                    cell_text = self.format_cell_text(cell)
+                    cells.append(cell_text.strip() or " ")  # Ensure empty cells are preserved
+                rows.append(cells)
+            
+            # Validate table structure
+            self.validate_table(rows)
+            
+            if not rows:
+                return ""
+                
+            # Create markdown table
+            header = "| " + " | ".join(rows[0]) + " |"
+            separator = "| " + " | ".join(["---"] * len(rows[0])) + " |"
+            body = "\n".join(f"| {' | '.join(row)} |" for row in rows[1:])
+            
+            return f"{header}\n{separator}\n{body}"
+            
+        except Exception as e:
+            self.logger.error(f"Failed to process table: {str(e)}")
+            if self._stats is not None:
+                self._stats['errors'].append({
+                    'block_id': block.get('id'),
+                    'block_type': 'table',
+                    'error': str(e)
+                })
+            return "<!-- Table processing failed -->"
+
+    async def handle_toggle_block(self, block: Dict, children_content: str = "") -> str:
+        """Convert a toggle block to markdown."""
+        try:
+            content = "".join(text.get("plain_text", "") for text in block["toggle"].get("rich_text", []))
+            if not content.strip():
+                content = "Toggle"  # Default text for empty toggles
+                
+            # Format the toggle with HTML details tag
+            return f"""<details>
+<summary>{content}</summary>
+
+{children_content}
+</details>"""
+            
+        except Exception as e:
+            self.logger.error(f"Failed to process toggle: {str(e)}")
+            return f"<!-- Toggle processing failed: {str(e)} -->"
