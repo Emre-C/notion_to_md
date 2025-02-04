@@ -170,8 +170,8 @@ class NotionToMarkdown:
                 if self._stats is not None:
                     self._stats['unhandled_types'].add(block_type)
                 raise UnhandledContentError(
-                    f"Block type '{block_type}' is not supported",
-                    block=block
+                    block_type=block_type,
+                    block_data=block
                 )
             
             self._validate_block(block, "", block_type)
@@ -389,8 +389,8 @@ class NotionToMarkdown:
             # Handle specific block types that we haven't implemented yet
             elif block_type in ["child_database", "synced_block"]:
                 raise UnhandledContentError(
-                    f"Block type '{block_type}' is not fully implemented yet",
-                    block=block
+                    block_type=block_type,
+                    block_data=block
                 )
 
             if self._stats is not None:
@@ -594,36 +594,77 @@ class NotionToMarkdown:
                         block_id = block["id"]
                 else:
                     block_id = block["id"]
-                          
-                child_blocks = await notion.get_block_children(
-                    self.notion_client,
-                    block_id,
-                    total_pages
-                )
                 
-                md_blocks.append({
-                    "type": block["type"],
-                    "block_id": block["id"],
-                    "parent": await self.block_to_markdown(block),
-                    "children": []
-                })
-                
-                # Process children if no custom transformer
-                if not (block["type"] in self.custom_transformers):
-                    await self.blocks_to_markdown(
-                        child_blocks,
-                        total_pages,
-                        md_blocks[-1]["children"]
+                # Special handling for child pages
+                if block["type"] == "child_page":
+                    try:
+                        # Get child page metadata
+                        page = await self.notion_client.pages.retrieve(page_id=block_id)
+                        title = page.get('properties', {}).get('title', {}).get('title', [{}])[0].get('plain_text', '').strip()
+                        
+                        # Get child page blocks first to check for content
+                        child_blocks = await notion.get_block_children(
+                            self.notion_client,
+                            block_id,
+                            total_pages
+                        )
+                        
+                        # Skip if no title or no content
+                        if not title:
+                            self.logger.warning(f"⚠ Skipped child page (no title): {block_id}")
+                            continue
+                            
+                        if not child_blocks:
+                            self.logger.warning(f"⚠ Skipped child page (no content): {block_id} - {title}")
+                            continue
+                            
+                        # Create child page block with title
+                        md_blocks.append({
+                            "type": "child_page",
+                            "block_id": block_id,
+                            "parent": md.heading2(title),  # Use h2 for child page titles
+                            "children": []
+                        })
+                        
+                        # Process child blocks
+                        child_md_blocks = await self.blocks_to_markdown(
+                            child_blocks,
+                            total_pages,
+                            md_blocks[-1]["children"]
+                        )
+                        
+                        # Skip if blocks converted to empty content
+                        if not child_md_blocks:
+                            self.logger.warning(f"⚠ Skipped child page (no meaningful content): {block_id} - {title}")
+                            md_blocks.pop()  # Remove the empty child page
+                            continue
+                            
+                    except Exception as e:
+                        self.logger.error(f"Failed to process child page {block_id}: {str(e)}")
+                        continue
+                else:
+                    # Normal block processing
+                    child_blocks = await notion.get_block_children(
+                        self.notion_client,
+                        block_id,
+                        total_pages
                     )
                     
+                    md_blocks.append({
+                        "type": block["type"],
+                        "block_id": block["id"],
+                        "parent": await self.block_to_markdown(block),
+                        "children": []
+                    })
+                    
+                    # Process children if no custom transformer
+                    if not (block["type"] in self.custom_transformers):
+                        await self.blocks_to_markdown(
+                            child_blocks,
+                            total_pages,
+                            md_blocks[-1]["children"]
+                        )
                 continue
-                
-            md_blocks.append({
-                "type": block["type"],
-                "block_id": block["id"],
-                "parent": await self.block_to_markdown(block),
-                "children": []
-            })
             
         return md_blocks
 
