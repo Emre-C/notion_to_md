@@ -3,7 +3,7 @@ import logging
 from notion_client import Client
 
 from .utils import md, notion, ConfigurationOptions, MdBlock, CustomTransformer, Annotations
-from .utils.exceptions import NotionParseError, UnhandledContentError, EmptyContentError, ValidationError, TableFormatError
+from .utils.exceptions import UnhandledContentError, EmptyContentError, ValidationError, TableFormatError
 
 
 class NotionToMarkdown:
@@ -103,7 +103,18 @@ class NotionToMarkdown:
 
     def annotate_plain_text(self, text: str, annotations: Annotations) -> str:
         """Apply text formatting annotations"""
-        # Ensure proper UTF-8 encoding
+        if not text:
+            return ""
+            
+        # Handle special quotes and apostrophes
+        text = text.replace('"', '"').replace('"', '"')
+        text = text.replace(''', "'").replace(''', "'")
+        
+        # For code blocks, preserve spaces and don't try to encode
+        if annotations.get("code"):
+            return md.inline_code(text)
+            
+        # For normal text, handle encoding
         try:
             text = text.encode('utf-8', errors='replace').decode('utf-8')
         except Exception as e:
@@ -114,16 +125,14 @@ class NotionToMarkdown:
         if len(text) == 1 or len(text.encode('utf-16-le')) // 2 == 1:
             return text
             
-        if annotations["bold"]:
+        if annotations.get("bold"):
             text = md.bold(text)
-        if annotations["italic"]:
+        if annotations.get("italic"):
             text = md.italic(text)
-        if annotations["strikethrough"]:
+        if annotations.get("strikethrough"):
             text = md.strikethrough(text)
-        if annotations["code"]:
-            text = md.inline_code(text)
-        if annotations["color"] and annotations["color"] != "default":
-            text = md.color(text, annotations["color"])
+        if annotations.get("color") and annotations.get("color") != "default":
+            text = md.color(text, annotations.get("color"))
         return text
 
     def validate_block_content(self, block: Dict, content: str, block_type: str) -> None:
@@ -156,9 +165,14 @@ class NotionToMarkdown:
         try:
             block_type = block.get("type", "")
             
-            # Track unhandled types
-            if self._stats is not None and block_type not in self.VALID_BLOCK_TYPES:
-                self._stats['unhandled_types'].add(block_type)
+            # Track unhandled types and raise error if not supported
+            if block_type not in self.VALID_BLOCK_TYPES:
+                if self._stats is not None:
+                    self._stats['unhandled_types'].add(block_type)
+                raise UnhandledContentError(
+                    f"Block type '{block_type}' is not supported",
+                    block=block
+                )
             
             self._validate_block(block, "", block_type)
             
@@ -181,7 +195,7 @@ class NotionToMarkdown:
             if block_type in [
                 "paragraph", "heading_1", "heading_2", "heading_3",
                 "bulleted_list_item", "numbered_list_item", "quote",
-                "to_do", "callout"  # Removed toggle from here as it needs special handling
+                "to_do", "callout"
             ]:
                 block_content = block.get(block_type, {}).get("rich_text", [])
                 for content in block_content:
@@ -372,10 +386,20 @@ class NotionToMarkdown:
                 self.logger.warning(f"Synced block {block.get('id')} skipped - limited support")
                 return "Content from synced block (limited support)"
 
+            # Handle specific block types that we haven't implemented yet
+            elif block_type in ["child_database", "synced_block"]:
+                raise UnhandledContentError(
+                    f"Block type '{block_type}' is not fully implemented yet",
+                    block=block
+                )
+
             if self._stats is not None:
                 self._stats['successful_blocks'] += 1
             return parsed_data
             
+        except UnhandledContentError:
+            # Re-raise UnhandledContentError to notify users
+            raise
         except Exception as e:
             if self.config.get('debug_mode'):
                 self.logger.error(
@@ -449,37 +473,36 @@ class NotionToMarkdown:
         return f"\n{md.link(f'{media_type.upper()}: {caption or 'media'}', url)}\n"
 
     async def to_markdown_string(self, md_blocks: List[MdBlock], page_identifier: str = "parent", nesting_level: int = 0) -> Dict[str, str]:
-        """Convert markdown blocks to string output.
-        
-        Args:
-            md_blocks: List of markdown blocks
-            page_identifier: Identifier for the page (default: "parent")
-            nesting_level: Current nesting level for indentation
-            
-        Returns:
-            Dict mapping page identifiers to markdown strings
-        """
+        """Convert markdown blocks to string output."""
         md_output: Dict[str, str] = {}
         
         for block in md_blocks:
             # Process parent blocks
-            if block.get("parent") and block["type"] not in ["toggle", "child_page"]:
-                if block["type"] not in ["to_do", "bulleted_list_item", "numbered_list_item", "quote"]:
+            if block.get("parent"):
+                if block["type"] not in ["toggle", "child_page", "to_do", "bulleted_list_item", "numbered_list_item", "quote"]:
+                    # Add single newline before block
                     md_output[page_identifier] = md_output.get(page_identifier, "")
-                    md_output[page_identifier] += f"\n{md.add_tab_space(block['parent'], nesting_level)}\n\n"
+                    md_output[page_identifier] += f"\n{md.add_tab_space(block['parent'], nesting_level)}"
                 else:
+                    # Handle list items with proper indentation
                     md_output[page_identifier] = md_output.get(page_identifier, "")
-                    md_output[page_identifier] += f"{md.add_tab_space(block['parent'], nesting_level)}\n"
+                    indentation = "  " * nesting_level if block["type"] in ["bulleted_list_item", "numbered_list_item", "to_do"] else ""
+                    md_output[page_identifier] += f"{indentation}{block['parent']}\n"
             
             # Process child blocks
             if block.get("children"):
-                if block["type"] in ["synced_block", "column_list", "column"]:
+                if block["type"] in ["bulleted_list_item", "numbered_list_item", "to_do"]:
+                    # Process nested list items with increased indentation
+                    md_str = await self.to_markdown_string(block["children"], page_identifier, nesting_level + 1)
+                    md_output[page_identifier] = md_output.get(page_identifier, "")
+                    if page_identifier in md_str:
+                        md_output[page_identifier] += md_str[page_identifier]
+                elif block["type"] in ["synced_block", "column_list", "column"]:
                     md_str = await self.to_markdown_string(block["children"], page_identifier)
                     md_output[page_identifier] = md_output.get(page_identifier, "")
                     
                     for key, value in md_str.items():
                         md_output[key] = md_output.get(key, "") + value
-                        
                 elif block["type"] == "child_page":
                     child_page_title = block["parent"]
                     md_str = await self.to_markdown_string(block["children"], child_page_title)
@@ -518,6 +541,10 @@ class NotionToMarkdown:
                         md_output[page_identifier] += md_str["parent"]
                     elif page_identifier in md_str:
                         md_output[page_identifier] += md_str[page_identifier]
+        
+        # Clean up multiple newlines
+        for key in md_output:
+            md_output[key] = "\n".join(line for line in md_output[key].splitlines() if line.strip() or line == "")
         
         return md_output
 
@@ -662,24 +689,20 @@ class NotionToMarkdown:
             try:
                 self._track_http_request(f"pages/{page_id}")
                 page = await self.notion_client.pages.retrieve(page_id=page_id)
-                title = page.get('properties', {}).get('title', {}).get('title', [{}])[0].get('plain_text', 'Untitled')
+                title = page.get('properties', {}).get('title', {}).get('title', [{}])[0].get('plain_text', '').strip()
                 
-                # Skip empty pages
-                if not title.strip():
-                    self.logger.warning(f"⚠ Skipped empty page: {page_id}")
+                # Skip if no title
+                if not title:
+                    self.logger.warning(f"⚠ Skipped empty page (no title): {page_id}")
                     return []
                 
-                # Create frontmatter block
-                frontmatter = {
-                    "type": "raw",
-                    "block_id": "frontmatter",
-                    "parent": f"""---
-title: {title}
----
-
-""",
-                    "children": []
-                }
+                # Get page blocks first to check for content
+                blocks = await notion.get_block_children(self.notion_client, page_id, total_pages)
+                
+                # Skip if no meaningful content
+                if not blocks:
+                    self.logger.warning(f"⚠ Skipped empty page (no content): {page_id} - {title}")
+                    return []
                 
                 # Create title block
                 title_block = {
@@ -688,32 +711,27 @@ title: {title}
                     "parent": md.heading1(title),
                     "children": []
                 }
+                
+                # Convert blocks to markdown
+                result = await self.blocks_to_markdown(blocks)
+                
+                # Skip if blocks converted to empty content
+                if not result:
+                    self.logger.warning(f"⚠ Skipped empty page (no meaningful content): {page_id} - {title}")
+                    return []
+                
+                # Insert title block at the beginning
+                result.insert(0, title_block)
+                
+                # Log conversion report
+                if self.config.get('debug_mode'):
+                    self.logger.info("\n" + self.generate_conversion_report())
+                
+                return result
+                
             except Exception as e:
                 self.logger.error(f"Failed to retrieve page metadata: {str(e)}")
-                frontmatter = None
-                title_block = None
-            
-            # Get page blocks
-            blocks = await notion.get_block_children(self.notion_client, page_id, total_pages)
-            
-            # Skip if no content
-            if not blocks and not title_block:
-                self.logger.warning(f"⚠ Skipped empty page: {page_id}")
                 return []
-                
-            result = await self.blocks_to_markdown(blocks)
-            
-            # Insert frontmatter and title blocks at the beginning if available
-            if frontmatter:
-                result.insert(0, frontmatter)
-            if title_block:
-                result.insert(1 if frontmatter else 0, title_block)
-            
-            # Log conversion report
-            if self.config.get('debug_mode'):
-                self.logger.info("\n" + self.generate_conversion_report())
-            
-            return result
             
         except Exception as e:
             self.logger.error(f"Failed to convert page {page_id}: {str(e)}", exc_info=True)
