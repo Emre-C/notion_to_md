@@ -359,5 +359,162 @@ class TestCustomTransformers(unittest.TestCase):
         
         self.assertEqual(md, "---")
 
+class TestPageMetadata:
+    @pytest.mark.asyncio
+    async def test_page_to_markdown_with_metadata(self, notion_to_md):
+        mock_page = {
+            'properties': {'title': {'title': [{'plain_text': 'Test Page'}]}},
+            'url': 'https://notion.so/test',
+            'last_edited_time': '2024-03-20'
+        }
+        
+        notion_to_md.notion_client.pages.retrieve.return_value = mock_page
+        notion_to_md.notion_client.blocks.children.list.return_value = {'results': []}
+        
+        result = await notion_to_md.page_to_markdown('test-id')
+        assert any('title: Test Page' in block['parent'] for block in result)
+        assert any('notion_url: https://notion.so/test' in block['parent'] for block in result)
+        assert any('# Test Page' in block['parent'] for block in result)
+
+class TestTableHandling:
+    @pytest.mark.asyncio
+    async def test_table_with_empty_cells(self, notion_to_md):
+        mock_table = {
+            'type': 'table',
+            'table': {
+                'rows': [
+                    {'cells': [[], [{'plain_text': 'content'}]]},
+                    {'cells': [[{'plain_text': 'data'}], []]}
+                ]
+            }
+        }
+        
+        result = await notion_to_md.block_to_markdown(mock_table)
+        assert '|  | content |' in result
+        assert '| data |  |' in result
+
+    @pytest.mark.asyncio
+    async def test_table_with_invalid_structure(self, notion_to_md):
+        mock_table = {
+            'type': 'table',
+            'table': {'rows': None}
+        }
+        
+        result = await notion_to_md.block_to_markdown(mock_table)
+        assert 'Table content (processing failed)' in result
+
+class TestStatisticsTracking:
+    @pytest.mark.asyncio
+    async def test_http_request_tracking(self, notion_to_md):
+        """Test that HTTP requests are properly tracked."""
+        notion_to_md.config['debug_mode'] = True
+        notion_to_md._init_stats()
+        
+        # Track some mock requests
+        notion_to_md._track_http_request('pages/123')
+        notion_to_md._track_http_request('blocks/456/children')
+        notion_to_md._track_http_request('blocks/789')
+        
+        debug_info = notion_to_md.get_debug_info()
+        assert debug_info['http_requests']['total'] == 3
+        assert debug_info['http_requests']['by_type']['page'] == 1
+        assert debug_info['http_requests']['by_type']['block_children'] == 1
+        assert debug_info['http_requests']['by_type']['block'] == 1
+
+    @pytest.mark.asyncio
+    async def test_unhandled_block_tracking(self, notion_to_md):
+        """Test that unhandled block types are properly tracked."""
+        notion_to_md.config['debug_mode'] = True
+        notion_to_md._init_stats()
+        
+        # Process a block with unknown type
+        await notion_to_md.block_to_markdown({
+            "type": "unknown_block_type",
+            "unknown_block_type": {"text": "test"}
+        })
+        
+        debug_info = notion_to_md.get_debug_info()
+        assert 'unknown_block_type' in debug_info['unhandled_types']
+
+    @pytest.mark.asyncio
+    async def test_conversion_report_format(self, notion_to_md):
+        """Test that conversion report is properly formatted."""
+        notion_to_md.config['debug_mode'] = True
+        notion_to_md._init_stats()
+        
+        # Process some blocks to generate stats
+        await notion_to_md.block_to_markdown({"type": "paragraph", "paragraph": {"rich_text": []}})
+        await notion_to_md.block_to_markdown({"type": "unknown_type", "unknown_type": {}})
+        notion_to_md._track_http_request('pages/123')
+        
+        report = notion_to_md.generate_conversion_report()
+        
+        # Check report sections
+        assert "Conversion Report" in report
+        assert "Blocks:" in report
+        assert "Unhandled Types" in report
+        assert "API Requests:" in report
+
+    @pytest.mark.asyncio
+    async def test_error_tracking(self, notion_to_md):
+        """Test that errors are properly tracked."""
+        notion_to_md.config['debug_mode'] = True
+        notion_to_md._init_stats()
+        
+        # Process a block that will cause an error
+        await notion_to_md.block_to_markdown({
+            "type": "image",
+            "image": {}  # Missing required image data
+        })
+        
+        debug_info = notion_to_md.get_debug_info()
+        assert len(debug_info['errors']) > 0
+        assert debug_info['errors'][0]['block_type'] == 'image'
+
+    @pytest.mark.asyncio
+    async def test_debug_mode_disabled(self, notion_to_md):
+        """Test that statistics are not tracked when debug mode is disabled."""
+        notion_to_md.config['debug_mode'] = False
+        
+        # Process a block
+        await notion_to_md.block_to_markdown({"type": "paragraph", "paragraph": {"rich_text": []}})
+        notion_to_md._track_http_request('pages/123')
+        
+        assert notion_to_md.get_debug_info() is None
+        assert notion_to_md.generate_conversion_report() == "No statistics available (debug mode disabled)"
+
+class TestBlockOperations:
+    @pytest.mark.asyncio
+    async def test_get_block_children_basic(self, notion_to_md):
+        """Test basic block children retrieval."""
+        notion_to_md.notion_client.blocks.children.list.return_value = {
+            "results": [
+                {"id": "1", "type": "paragraph"},
+                {"id": "2", "type": "paragraph"}
+            ],
+            "has_more": False
+        }
+        
+        blocks = await notion.get_block_children(notion_to_md.notion_client, "test-block")
+        assert len(blocks) == 2
+
+    @pytest.mark.asyncio
+    async def test_get_block_children_pagination(self, notion_to_md):
+        """Test pagination of block children."""
+        notion_to_md.notion_client.blocks.children.list.side_effect = [
+            {
+                "results": [{"id": "1"}],
+                "has_more": True,
+                "next_cursor": "cursor123"
+            },
+            {
+                "results": [{"id": "2"}],
+                "has_more": False
+            }
+        ]
+        
+        blocks = await notion.get_block_children(notion_to_md.notion_client, "test-block")
+        assert len(blocks) == 2
+
 if __name__ == '__main__':
     unittest.main()

@@ -50,8 +50,32 @@ class NotionToMarkdown:
             'total_blocks': 0,
             'successful_blocks': 0,
             'errors': [],
-            'unhandled_types': set()
+            'unhandled_types': set(),
+            'http_requests': {
+                'total': 0,
+                'by_type': {}  # Will store counts by endpoint type
+            }
         }
+
+    def _track_http_request(self, url: str) -> None:
+        """Track HTTP request for statistics."""
+        if not self._stats:
+            return
+            
+        self._stats['http_requests']['total'] += 1
+        
+        # Categorize request
+        if 'blocks' in url and 'children' in url:
+            req_type = 'block_children'
+        elif 'blocks' in url:
+            req_type = 'block'
+        elif 'pages' in url:
+            req_type = 'page'
+        else:
+            req_type = 'other'
+            
+        self._stats['http_requests']['by_type'][req_type] = \
+            self._stats['http_requests']['by_type'].get(req_type, 0) + 1
 
     def _validate_block(self, block: Dict, content: str, block_type: str) -> None:
         """Internal validation method - only runs basic validations by default."""
@@ -79,6 +103,17 @@ class NotionToMarkdown:
 
     def annotate_plain_text(self, text: str, annotations: Annotations) -> str:
         """Apply text formatting annotations"""
+        # Ensure proper UTF-8 encoding
+        try:
+            text = text.encode('utf-8', errors='replace').decode('utf-8')
+        except Exception as e:
+            self.logger.warning(f"Failed to encode text: {str(e)}")
+            text = text.encode('ascii', errors='replace').decode('ascii')
+            
+        # Preserve emojis by not applying formatting to single-character emoji-like text
+        if len(text) == 1 or len(text.encode('utf-16-le')) // 2 == 1:
+            return text
+            
         if annotations["bold"]:
             text = md.bold(text)
         if annotations["italic"]:
@@ -120,6 +155,11 @@ class NotionToMarkdown:
         """Convert a single block to markdown."""
         try:
             block_type = block.get("type", "")
+            
+            # Track unhandled types
+            if self._stats is not None and block_type not in self.VALID_BLOCK_TYPES:
+                self._stats['unhandled_types'].add(block_type)
+            
             self._validate_block(block, "", block_type)
             
             if self._stats is not None:
@@ -157,6 +197,29 @@ class NotionToMarkdown:
                         
                         parsed_data += text
 
+                # Apply heading formatting after collecting all text
+                if block_type == "heading_1":
+                    parsed_data = md.heading1(parsed_data)
+                elif block_type == "heading_2":
+                    parsed_data = md.heading2(parsed_data)
+                elif block_type == "heading_3":
+                    parsed_data = md.heading3(parsed_data)
+                elif block_type == "bulleted_list_item":
+                    parsed_data = md.bullet(parsed_data)
+                elif block_type == "numbered_list_item":
+                    number = block.get(block_type, {}).get("number", 1)
+                    parsed_data = md.bullet(parsed_data, number)
+                elif block_type == "to_do":
+                    checked = block.get(block_type, {}).get("checked", False)
+                    parsed_data = md.todo(parsed_data, checked)
+                elif block_type == "toggle":
+                    # TODO: Improve toggle block handling
+                    # Current limitations:
+                    # - Nested toggles might not be properly handled
+                    # - Complex content within toggles needs verification
+                    # - Pagination for toggle children not implemented
+                    parsed_data = md.toggle(parsed_data, "Content hidden (toggle support limited)")
+
             # Handle specific block types
             if block_type == "code":
                 code_content = "".join(text["plain_text"] for text in block["code"].get("rich_text", []))
@@ -169,17 +232,37 @@ class NotionToMarkdown:
                 parsed_data = md.divider()
                 
             elif block_type == "image":
-                caption = "".join(t["plain_text"] for t in block["image"].get("caption", []))
-                url = (
-                    block["image"]["file"]["url"]
-                    if block["image"]["type"] == "file"
-                    else block["image"]["external"]["url"]
-                )
-                parsed_data = await md.image(
-                    caption or "image",
-                    url,
-                    self.config["convert_images_to_base64"]
-                )
+                try:
+                    image_data = block.get("image", {})
+                    caption = "".join(t["plain_text"] for t in image_data.get("caption", []))
+                    
+                    # Handle all possible image types
+                    if image_data.get("type") == "file":
+                        url = image_data.get("file", {}).get("url")
+                    elif image_data.get("type") == "external":
+                        url = image_data.get("external", {}).get("url")
+                    else:
+                        # Fallback for any other type
+                        url = image_data.get("url")
+                    
+                    if not url:
+                        self.logger.warning(f"No URL found for image block {block.get('id')}")
+                        return ""
+                        
+                    parsed_data = await md.image(
+                        caption or "image",
+                        url,
+                        self.config["convert_images_to_base64"]
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to process image block {block.get('id')}: {str(e)}")
+                    if self._stats is not None:
+                        self._stats['errors'].append({
+                            'block_id': block.get('id'),
+                            'block_type': 'image',
+                            'error': str(e)
+                        })
+                    return ""
 
             elif block_type == "video":
                 caption = "".join(t["plain_text"] for t in block["video"].get("caption", []))
@@ -223,14 +306,23 @@ class NotionToMarkdown:
                 parsed_data = md.link(url, url)  # Use URL as both text and link
 
             elif block_type == "table":
-                rows = []
-                for row in block.get("table", {}).get("rows", []):
-                    cells = []
-                    for cell in row.get("cells", []):
-                        cell_text = "".join(t["plain_text"] for t in cell)
-                        cells.append(cell_text)
-                    rows.append(cells)
-                parsed_data = md.table(rows)
+                # TODO: Improve table handling
+                # Current limitations:
+                # - Column header support needed
+                # - Complex formatting within cells needs verification
+                # - Empty cell handling needs improvement
+                try:
+                    rows = []
+                    for row in block.get("table", {}).get("rows", []):
+                        cells = []
+                        for cell in row.get("cells", []):
+                            cell_text = "".join(t["plain_text"] for t in cell)
+                            cells.append(cell_text)
+                        rows.append(cells)
+                    parsed_data = md.table(rows)
+                except Exception as e:
+                    self.logger.error(f"Failed to process table: {str(e)}")
+                    return "Table content (processing failed)"
 
             elif block_type == "column_list":
                 # Handle columns as a container
@@ -272,6 +364,15 @@ class NotionToMarkdown:
                         parsed_data = md.link("Linked page", f"notion://page/{target_id}")
                 else:
                     parsed_data = "Invalid page link"
+
+            elif block_type == "synced_block":
+                # TODO: Improve synced block handling
+                # Current limitations:
+                # - Recursive synced blocks not fully supported
+                # - Permission handling needs verification
+                # - Infinite loop prevention needed
+                self.logger.warning(f"Synced block {block.get('id')} skipped - limited support")
+                return "Content from synced block (limited support)"
 
             if self._stats is not None:
                 self._stats['successful_blocks'] += 1
@@ -499,66 +600,106 @@ class NotionToMarkdown:
         return md_blocks
 
     def generate_conversion_report(self) -> str:
-        """Generate a summary report of the conversion process.
-        
-        Returns:
-            A formatted string containing conversion statistics and errors
-        """
+        """Generate a summary report of the conversion process."""
+        if not self._stats:
+            return "No statistics available (debug mode disabled)"
+            
         success_rate = (
             (self._stats['successful_blocks'] / self._stats['total_blocks'] * 100)
             if self._stats['total_blocks'] > 0 else 0
         )
         
+        # Create main report sections
         report = [
             "Conversion Report",
             "================",
-            f"Total blocks processed: {self._stats['total_blocks']}",
-            f"Successfully converted: {self._stats['successful_blocks']} ({success_rate:.1f}%)",
-            f"Errors encountered: {len(self._stats['errors'])}",
-            f"Unhandled block types: {', '.join(self._stats['unhandled_types']) or 'None'}"
+            f"Blocks: {self._stats['successful_blocks']}/{self._stats['total_blocks']} ({success_rate:.1f}% success)",
         ]
         
+        # Add unhandled types section if any exist
+        if self._stats['unhandled_types']:
+            report.append(f"\nUnhandled Types ({len(self._stats['unhandled_types'])}):")
+            for block_type in sorted(self._stats['unhandled_types']):
+                report.append(f"  - {block_type}")
+        
+        # Add error summary if any exist
         if self._stats['errors']:
             report.extend([
-                "\nDetailed Errors",
-                "---------------"
+                f"\nErrors ({len(self._stats['errors'])}):",
+                "  Most common issues:"
             ])
+            error_counts = {}
             for error in self._stats['errors']:
-                report.append(
-                    f"Block {error['block_id']} ({error['block_type']}): "
-                    f"{error['error']}"
-                )
+                error_type = error['block_type'] or 'unknown'
+                error_counts[error_type] = error_counts.get(error_type, 0) + 1
+            
+            for block_type, count in sorted(error_counts.items(), key=lambda x: x[1], reverse=True)[:3]:
+                report.append(f"  - {block_type}: {count} errors")
+        
+        # Add API request summary
+        if self._stats['http_requests']['total'] > 0:
+            report.extend([
+                f"\nAPI Requests: {self._stats['http_requests']['total']} total",
+                "  Breakdown:"
+            ])
+            for req_type, count in sorted(self._stats['http_requests']['by_type'].items(), key=lambda x: x[1], reverse=True):
+                report.append(f"  - {req_type}: {count}")
         
         return "\n".join(report)
 
     async def page_to_markdown(self, page_id: str, total_pages: Optional[int] = None) -> List[MdBlock]:
-        """Convert a Notion page to markdown.
-        
-        Args:
-            page_id: ID of the Notion page
-            total_pages: Number of pages to fetch (100 blocks per page)
-            
-        Returns:
-            List of markdown blocks
-            
-        Raises:
-            ValueError: If notion_client is not set
-            NotionParseError: If parsing fails
-        """
+        """Convert a Notion page to markdown."""
         if not self.notion_client:
             raise ValueError("notion_client is required")
         
         try:
             # Reset stats for new conversion
-            self._stats = {
-                'total_blocks': 0,
-                'successful_blocks': 0,
-                'errors': [],
-                'unhandled_types': set()
-            }
+            if self.config.get('debug_mode'):
+                self._init_stats()
             
+            # Get page metadata with error handling
+            try:
+                self._track_http_request(f"pages/{page_id}")
+                page = await self.notion_client.pages.retrieve(page_id=page_id)
+                title = page.get('properties', {}).get('title', {}).get('title', [{}])[0].get('plain_text', 'Untitled')
+                url = page.get('url', '')
+                last_edited = page.get('last_edited_time', '')
+                
+                # Create frontmatter block
+                frontmatter = {
+                    "type": "raw",
+                    "block_id": "frontmatter",
+                    "parent": f"""---
+title: {title}
+notion_url: {url}
+last_edited: {last_edited}
+---
+
+""",
+                    "children": []
+                }
+                
+                # Create title block
+                title_block = {
+                    "type": "heading_1",
+                    "block_id": "title",
+                    "parent": md.heading1(title),
+                    "children": []
+                }
+            except Exception as e:
+                self.logger.error(f"Failed to retrieve page metadata: {str(e)}")
+                frontmatter = None
+                title_block = None
+            
+            # Get page blocks
             blocks = await notion.get_block_children(self.notion_client, page_id, total_pages)
             result = await self.blocks_to_markdown(blocks)
+            
+            # Insert frontmatter and title blocks at the beginning if available
+            if frontmatter:
+                result.insert(0, frontmatter)
+            if title_block:
+                result.insert(1 if frontmatter else 0, title_block)
             
             # Log conversion report
             self.logger.info("\n" + self.generate_conversion_report())
@@ -588,5 +729,6 @@ class NotionToMarkdown:
             'successful_blocks': self._stats['successful_blocks'],
             'success_rate': f"{success_rate:.1f}%",
             'errors': self._stats['errors'],
-            'unhandled_types': list(self._stats['unhandled_types'])
+            'unhandled_types': list(self._stats['unhandled_types']),
+            'http_requests': self._stats['http_requests']
         }

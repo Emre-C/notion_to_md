@@ -18,4 +18,11 @@ class EmptyContentError(NotionParseError):
 
 class ValidationError(NotionParseError):
     """Raised when content fails validation checks."""
-    pass 
+    pass
+
+class UnsupportedFeatureError(NotionParseError):
+    """Raised when a feature is not fully supported or has known limitations."""
+    def __init__(self, message: str, block=None, feature_name: str = None, limitation_details: str = None):
+        super().__init__(message, block)
+        self.feature_name = feature_name
+        self.limitation_details = limitation_details 

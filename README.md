@@ -180,6 +180,16 @@ last_edited: {page.get('last_edited_time')}
 - Links
 - Equations
 
+## Known Limitations
+
+Some Notion features currently have limited support:
+
+- **Toggle Blocks**: Basic support only. Nested toggles and complex content within toggles may not render correctly.
+- **Synced Blocks**: Limited support. Content is preserved but syncing behavior is not fully implemented.
+- **Tables**: Basic support for simple tables. Complex formatting and column headers may not render correctly.
+
+We're actively working on improving support for these features. For the most up-to-date status, please check our issues page.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
