@@ -59,7 +59,8 @@ BlockType = Literal[
     "pdf", "bookmark", "callout", "synced_block", "table",
     "column_list", "column", "link_preview", "link_to_page",
     "equation", "divider", "table_of_contents", "child_page",
-    "child_database", "breadcrumb", "template", "unsupported"
+    "child_database", "breadcrumb", "template", "unsupported",
+    "audio", "embed"
 ]
 
 # These TypedDicts remain here for possible future usage

@@ -4,19 +4,33 @@ build-backend = "hatchling.build"
 
 [project]
 name = "python_notion_to_md"
-version = "0.1.0"
+version = "0.1.1"
 description = "Convert Notion pages to Markdown - Python port of notion-to-md"
 authors = [
   {name = "Emre Coklar", email = "emre.coklar@gmail.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = [
-  "notion-client>=2.0.0",
-  "aiohttp>=3.8.0",
-  "tenacity>=8.0.0"
+license = "MIT"
+keywords = ["notion", "markdown", "converter", "notion-api"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Text Processing :: Markup",
+    "Topic :: Software Development :: Libraries :: Python Modules"
 ]
 
 packages = [
   { include = "python_notion_to_md", from = "src" }
 ]
+
+[project.urls]
+Homepage = "https://github.com/emrecoklar/python_notion_to_md"
+Documentation = "https://github.com/emrecoklar/python_notion_to_md#readme"
+"Bug Tracker" = "https://github.com/emrecoklar/python_notion_to_md/issues"

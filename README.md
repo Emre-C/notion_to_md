@@ -1,192 +1,184 @@
 # notion_to_md (Python)
 
-A Python library to convert Notion blocks into Markdown formatted text. This is a Python port of the popular [notion-to-md](https://github.com/souvikinator/notion-to-md) JavaScript library so all kudos go to those wonderful folks.
+Convert Notion pages to clean, readable Markdown. Python port of [notion-to-md](https://github.com/souvikinator/notion-to-md).
 
-## Features
+## Quick Start
 
-- 🔄 Converts Notion blocks to clean Markdown
-- 🎯 Supports all common Notion block types
-- 📝 Handles rich text annotations (bold, italic, code, etc.)
-- 🖼️ Image conversion with base64 support
-- 📑 Supports nested blocks and child pages
-- 🔄 Handles synced blocks
-- 📊 Database block support
-- 🎨 Custom block transformer support
-- ⚡ Async/await API
-- 🔁 Automatic retry with exponential backoff for API calls
-
-## Installation
-
+1. Install the package:
 ```bash
 pip install notion_to_md
 ```
 
-## Quickstart Guide
+2. Basic usage:
+```python
+from notion_client import AsyncClient
+from notion_to_md import NotionToMarkdown
 
-Here's a complete example showing how to export Notion pages to Markdown files:
+async def convert_page(notion_token: str, page_id: str) -> str:
+    # Initialize clients
+    notion = AsyncClient(auth=notion_token)
+    n2m = NotionToMarkdown(notion_client=notion)
+    
+    # Convert page to markdown
+    md_blocks = await n2m.page_to_markdown(page_id)
+    md_string = await n2m.to_markdown_string(md_blocks)
+    
+    return md_string['parent']  # Returns the main page content
+
+# Usage
+result = await convert_page("your-notion-token", "your-page-id")
+print(result)
+```
+
+## Features
+
+- 🎯 Supports all common Notion blocks (text, lists, tables, code, etc.)
+- 📝 Preserves formatting (bold, italic, code, colors)
+- 🖼️ Handles images (with optional base64 conversion)
+- 📑 Supports nested content (child pages, synced blocks)
+- ⚡ Modern async/await API
+- 🔁 Built-in error handling and API retry logic
+
+## Configuration
+
+Control the converter's behavior with configuration options:
 
 ```python
-import asyncio
-from pathlib import Path
-from notion_client import AsyncClient
 from notion_to_md import NotionToMarkdown, ConfigurationOptions
 
-async def export_notion_page(notion_token: str, page_id: str, output_dir: str = "exports"):
-    # Create output directory
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize Notion client and NotionToMarkdown
-    notion = AsyncClient(auth=notion_token)
-    n2m = NotionToMarkdown(
-        notion_client=notion,
-        config=ConfigurationOptions(
-            separate_child_page=True,      # Create separate files for child pages
-            convert_images_to_base64=False, # Keep images as URLs
-            parse_child_pages=True,        # Include child pages
-            api_retry_attempts=3,          # Number of API retry attempts
-            api_rate_limit_delay=0.5,      # Delay between API calls
-            max_concurrent_requests=5       # Maximum concurrent API requests
-        )
+n2m = NotionToMarkdown(
+    notion_client=notion,
+    config=ConfigurationOptions(
+        # Core Options
+        separate_child_page=False,  # True to split child pages into separate files
+        parse_child_pages=True,     # False to skip child pages entirely
+        
+        # Image Handling
+        convert_images_to_base64=False,  # True to embed images as base64
+        
+        # API Behavior
+        api_retry_attempts=3,          # Number of retries for failed API calls
+        api_rate_limit_delay=0.5,      # Delay between API calls
+        max_concurrent_requests=5,      # Max concurrent API requests
+        
+        # Debugging
+        debug_mode=False               # Enable detailed error tracking
     )
+)
+```
+
+## Advanced Usage
+
+### 1. Handling Child Pages
+
+```python
+# Convert page with child pages as separate files
+md_blocks = await n2m.page_to_markdown(page_id)
+md_string = await n2m.to_markdown_string(md_blocks)
+
+# Main page content
+main_content = md_string['parent']
+
+# Child pages (if separate_child_page=True)
+for page_id, content in md_string.items():
+    if page_id != 'parent':
+        # Each child page content
+        print(f"Child page {page_id}: {content}")
+```
+
+### 2. Custom Block Transformers
+
+Add custom handling for specific block types:
+
+```python
+def custom_code_block(block):
+    """Custom transformer for code blocks"""
+    if block["type"] != "code":
+        return False  # Let default handler process it
+        
+    language = block["code"].get("language", "")
+    code = "".join(text["plain_text"] for text in block["code"].get("rich_text", []))
+    return f"```{language}\n{code}\n```"
+
+# Register the transformer
+n2m.set_custom_transformer("code", custom_code_block)
+```
+
+### 3. Error Handling and Debugging
+
+Enable debug mode for detailed error tracking:
+
+```python
+n2m = NotionToMarkdown(
+    notion_client=notion,
+    config=ConfigurationOptions(debug_mode=True)
+)
+
+# Convert your page
+md_blocks = await n2m.page_to_markdown(page_id)
+
+# Get debug information
+debug_info = n2m.get_debug_info()
+if debug_info:
+    print(f"Success rate: {debug_info['success_rate']}")
+    print(f"Errors: {len(debug_info['errors'])}")
+    print(f"Unhandled types: {debug_info['unhandled_types']}")
+```
+
+## Complete Example
+
+Here's a full example that exports a Notion page to a Markdown file with metadata:
+
+```python
+async def export_notion_page(notion_token: str, page_id: str, output_file: str):
+    notion = AsyncClient(auth=notion_token)
+    n2m = NotionToMarkdown(notion_client=notion)
     
     try:
         # Get page metadata
         page = await notion.pages.retrieve(page_id=page_id)
         title = page.get('properties', {}).get('title', {}).get('title', [{}])[0].get('plain_text', 'Untitled')
         
-        # Convert page to markdown
+        # Convert to markdown
         md_blocks = await n2m.page_to_markdown(page_id)
         md_string = await n2m.to_markdown_string(md_blocks)
         
-        if md_string:
-            # Create markdown file
-            file_name = f"{title.lower().replace(' ', '_')}.md"
-            file_path = output_dir / file_name
-            
-            # Add metadata header
-            content = f"""---
+        # Add metadata
+        content = f"""---
+title: {title}
 notion_url: {page.get('url')}
-last_updated: {page.get('last_edited_time')}
+last_edited: {page.get('last_edited_time')}
 ---
 
 {md_string['parent']}"""
+        
+        # Save to file
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(content)
             
-            # Write to file
-            file_path.write_text(content)
-            print(f"✓ Exported: {title} to {file_path}")
-            
-            # Handle child pages if any
-            if len(md_string) > 1:  # Has child pages
-                child_dir = output_dir / file_name.replace('.md', '')
-                child_dir.mkdir(parents=True, exist_ok=True)
-                
-                for child_id, child_content in md_string.items():
-                    if child_id != 'parent' and child_content:
-                        child_page = await notion.pages.retrieve(page_id=child_id)
-                        child_title = child_page.get('properties', {}).get('title', {}).get('title', [{}])[0].get('plain_text', 'Untitled')
-                        child_file = child_dir / f"{child_title.lower().replace(' ', '_')}.md"
-                        
-                        # Add metadata to child page
-                        child_content_with_meta = f"""---
-notion_url: {child_page.get('url')}
-last_updated: {child_page.get('last_edited_time')}
----
-
-{child_content}"""
-                        child_file.write_text(child_content_with_meta)
-                        print(f"  ↳ Child page exported: {child_title}")
-            
-            return True
+        print(f"✓ Exported: {title} -> {output_file}")
+        
     except Exception as e:
-        print(f"Error exporting page {page_id}: {str(e)}")
-        return False
-
-# Example usage
-if __name__ == "__main__":
-    NOTION_TOKEN = "your-notion-integration-token"
-    PAGE_ID = "your-page-id"
-    
-    asyncio.run(export_notion_page(NOTION_TOKEN, PAGE_ID))
-
-## Usage
-
-```python
-from notion_to_md import NotionToMarkdown, ConfigurationOptions
-from notion_client import AsyncClient
-
-# Initialize the Notion client
-notion = AsyncClient(auth="your-notion-api-key")
-
-# Create NotionToMarkdown instance with configuration
-n2m = NotionToMarkdown(
-    notion_client=notion,
-    config=ConfigurationOptions(
-        separate_child_page=True,      # Create separate files for child pages
-        convert_images_to_base64=True, # Convert images to base64
-        parse_child_pages=True,        # Parse child pages
-        api_retry_attempts=3,          # Number of API retry attempts
-        api_rate_limit_delay=0.5,      # Delay between API calls
-        max_concurrent_requests=5       # Maximum concurrent API requests
-    )
-)
-
-# Convert a page to markdown
-async def convert_page(page_id: str):
-    blocks = await n2m.get_block_children(block_id=page_id)
-    markdown = await n2m.blocks_to_markdown(blocks)
-    return markdown
-
-# Custom block transformer (synchronous)
-def custom_transformer(block):
-    if block["type"] == "my_custom_block":
-        return "Custom markdown output"
-    return False  # Return False to use default transformer
-
-n2m.set_custom_transformer("my_custom_block", custom_transformer)
+        print(f"Error: {str(e)}")
 ```
 
-## Supported Block Types
+## Supported Content
 
-- Paragraphs
-- Headings (H1, H2, H3)
-- Bulleted lists
-- Numbered lists
-- To-do lists
-- Toggle blocks
-- Code blocks
-- Images
-- Videos
-- Files
-- PDFs
-- Bookmarks
-- Callouts
-- Synced blocks
-- Tables
-- Columns
-- Link previews
-- Page links
-- Equations
-- Dividers
-- Table of contents
-- Child pages
-- Child databases
-- Audio blocks
-- Embed blocks
-- Breadcrumbs
+### Block Types
+- Text (paragraphs, headings)
+- Lists (bulleted, numbered, to-do)
+- Media (images, videos, files)
+- Embeds (bookmarks, PDFs)
+- Structural (tables, columns, toggles)
+- Interactive (equations, code blocks)
+- Organizational (child pages, databases)
 
-## Text Annotations
-
-The library supports these Notion text annotations:
-- Bold
-- Italic
-- Strikethrough
-- Underline
-- Code
-- Colors (including background colors)
+### Text Formatting
+- Basic (bold, italic, strikethrough)
+- Code (inline, blocks)
+- Colors (text and background)
 - Links
-
-Colors are rendered using HTML spans with Notion-specific CSS classes (e.g., `notion-red`, `notion-blue-background`, etc.). You'll need to include appropriate CSS styles to see the colors in your rendered markdown.
+- Equations
 
 ## Contributing
 

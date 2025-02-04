@@ -3,6 +3,7 @@ import logging
 from notion_client import Client
 
 from .utils import md, notion, ConfigurationOptions, MdBlock, CustomTransformer, Annotations
+from .utils.exceptions import NotionParseError, UnhandledContentError, EmptyContentError, ValidationError
 
 
 class NotionToMarkdown:
@@ -28,14 +29,42 @@ class NotionToMarkdown:
             parse_child_pages=True,
             api_retry_attempts=3,
             api_rate_limit_delay=0.5,
-            max_concurrent_requests=5
+            max_concurrent_requests=5,
+            debug_mode=False  # New config option for debug features
         )
         self.config = config or default_config
         self.custom_transformers: Dict[str, Optional[CustomTransformer]] = {}
         
-        # Setup logging
+        # Setup logging - only enable debug logging if explicitly requested
         self.logger = logging.getLogger("notion2md")
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.INFO if not self.config.get('debug_mode') else logging.DEBUG)
+        
+        # Only initialize stats if in debug mode
+        self._stats = None
+        if self.config.get('debug_mode'):
+            self._init_stats()
+
+    def _init_stats(self) -> None:
+        """Initialize conversion statistics tracking."""
+        self._stats = {
+            'total_blocks': 0,
+            'successful_blocks': 0,
+            'errors': [],
+            'unhandled_types': set()
+        }
+
+    def _validate_block(self, block: Dict, content: str, block_type: str) -> None:
+        """Internal validation method - only runs basic validations by default."""
+        if not isinstance(block, dict) or "type" not in block:
+            raise ValueError("Invalid block structure")
+            
+        if not isinstance(block_type, str) or block_type not in self.VALID_BLOCK_TYPES:
+            raise ValueError(f"Invalid block type: {block_type}")
+            
+        # Only run content validation in debug mode
+        if self.config.get('debug_mode'):
+            if not content and block_type not in ['divider', 'table_of_contents', 'breadcrumb']:
+                self.logger.warning(f"Empty content in {block_type} block {block.get('id')}")
 
     VALID_BLOCK_TYPES = [
         'paragraph', 'heading_1', 'heading_2', 'heading_3',
@@ -62,117 +91,205 @@ class NotionToMarkdown:
             text = md.color(text, annotations["color"])
         return text
 
+    def validate_block_content(self, block: Dict, content: str, block_type: str) -> None:
+        """Validate block content after conversion.
+        
+        Args:
+            block: Original Notion block
+            content: Converted markdown content
+            block_type: Type of the block
+            
+        Raises:
+            EmptyContentError: If content is empty when it shouldn't be
+            ValidationError: If content fails validation rules
+        """
+        if not content or content.isspace():
+            if block_type not in ['divider', 'table_of_contents', 'breadcrumb']:
+                raise EmptyContentError(f"Empty {block_type} content", block)
+                
+        # Add specific validation rules for different block types
+        if block_type == 'code':
+            if not block.get('code', {}).get('rich_text'):
+                raise ValidationError("Code block missing rich_text content", block)
+                
+        elif block_type == 'image':
+            if not block.get('image'):
+                raise ValidationError("Image block missing image data", block)
+
     async def block_to_markdown(self, block: Dict) -> str:
         """Convert a single block to markdown."""
-        if not isinstance(block, dict) or "type" not in block:
-            return ""
+        try:
+            block_type = block.get("type", "")
+            self._validate_block(block, "", block_type)
             
-        block_type = block.get("type")
-        if not isinstance(block_type, str):
-            return ""
-        if block_type not in self.VALID_BLOCK_TYPES:
-            raise ValueError(f"Invalid block type: {block_type}")
+            if self._stats is not None:
+                self._stats['total_blocks'] += 1
             
-        transformer = self.custom_transformers.get(block_type)
-        if transformer is not None:
-            result = transformer(block)
-            if isinstance(result, str):
-                return result
-            return ""
-
-        parsed_data = ""
-        
-        # Handle text-based blocks
-        if block_type in [
-            "paragraph", "heading_1", "heading_2", "heading_3",
-            "bulleted_list_item", "numbered_list_item", "quote",
-            "to_do", "toggle", "callout"
-        ]:
-            block_content = block.get(block_type, {}).get("rich_text", [])
-            for content in block_content:
-                if content["type"] == "equation":
-                    parsed_data += md.inline_equation(content["equation"]["expression"])
-                else:
-                    plain_text = content.get("plain_text", "")
-                    annotations = content.get("annotations", {})
-                    text = self.annotate_plain_text(plain_text, annotations)
-                    
-                    if content.get("href"):
-                        text = md.link(text, content["href"])
-                    
-                    parsed_data += text
-
-        # Handle specific block types
-        if block_type == "code":
-            parsed_data = md.code_block(parsed_data, block["code"].get("language", ""))
-            
-        elif block_type == "equation":
-            parsed_data = md.equation(block["equation"]["expression"])
-            
-        elif block_type == "divider":
-            parsed_data = md.divider()
-            
-        elif block_type == "image":
-            caption = "".join(t["plain_text"] for t in block["image"].get("caption", []))
-            url = (
-                block["image"]["file"]["url"]
-                if block["image"]["type"] == "file"
-                else block["image"]["external"]["url"]
-            )
-            parsed_data = await md.image(
-                caption or "image",
-                url,
-                self.config["convert_images_to_base64"]
-            )
-            
-        elif block_type == "table":
-            table_rows = []
-            for row in block.get("table", {}).get("rows", []):
-                cells = []
-                for cell in row.get("cells", []):
-                    cell_text = "".join(t["plain_text"] for t in cell)
-                    cells.append(cell_text)
-                table_rows.append(cells)
-            parsed_data = md.table(table_rows)
-            
-        elif block_type == "child_page":
-            if self.config["parse_child_pages"]:
-                title = block["child_page"].get("title", "")
-                parsed_data = md.heading2(title) if not self.config["separate_child_page"] else title
-                
-        elif block_type == "synced_block":
-            parsed_data = await self.handle_synced_block(block)
-            
-        elif block_type == "child_database":
-            if not self.config["parse_child_pages"]:
+            # Handle custom transformers
+            transformer = self.custom_transformers.get(block_type)
+            if transformer is not None:
+                result = transformer(block)
+                if isinstance(result, str):
+                    if self._stats is not None:
+                        self._stats['successful_blocks'] += 1
+                    return result
                 return ""
-            title = block["child_database"].get("title", "Child Database")
-            return md.heading3(title)
-            
-        elif block_type == "table_of_contents":
-            return md.divider()
-            
-        elif block_type == "audio":
-            audio_block = block["audio"]
-            caption = "".join([t["plain_text"] for t in audio_block.get("caption", [])])
-            url = audio_block.get("file", {}).get("url", "")
-            return md.link(caption or "audio", url)
-            
-        elif block_type == "embed":
-            embed_block = block["embed"]
-            caption = "".join([t["plain_text"] for t in embed_block.get("caption", [])])
-            url = embed_block.get("url", "")
-            return md.link(caption or "embed", url)
-            
-        elif block_type == "link_preview":
-            preview_block = block["link_preview"]
-            url = preview_block.get("url", "")
-            return md.link("link_preview", url)
-            
-        elif block_type == "breadcrumb":
-            return md.divider()  # Simple representation for breadcrumb
 
-        return parsed_data
+            parsed_data = ""
+            
+            # Handle text-based blocks
+            if block_type in [
+                "paragraph", "heading_1", "heading_2", "heading_3",
+                "bulleted_list_item", "numbered_list_item", "quote",
+                "to_do", "toggle", "callout"
+            ]:
+                block_content = block.get(block_type, {}).get("rich_text", [])
+                for content in block_content:
+                    if content["type"] == "equation":
+                        parsed_data += md.inline_equation(content["equation"]["expression"])
+                    else:
+                        plain_text = content.get("plain_text", "")
+                        annotations = content.get("annotations", {})
+                        text = self.annotate_plain_text(plain_text, annotations)
+                        
+                        if content.get("href"):
+                            text = md.link(text, content["href"])
+                        
+                        parsed_data += text
+
+            # Handle specific block types
+            if block_type == "code":
+                code_content = "".join(text["plain_text"] for text in block["code"].get("rich_text", []))
+                parsed_data = md.code_block(code_content, block["code"].get("language", ""))
+                
+            elif block_type == "equation":
+                parsed_data = md.equation(block["equation"]["expression"])
+                
+            elif block_type == "divider":
+                parsed_data = md.divider()
+                
+            elif block_type == "image":
+                caption = "".join(t["plain_text"] for t in block["image"].get("caption", []))
+                url = (
+                    block["image"]["file"]["url"]
+                    if block["image"]["type"] == "file"
+                    else block["image"]["external"]["url"]
+                )
+                parsed_data = await md.image(
+                    caption or "image",
+                    url,
+                    self.config["convert_images_to_base64"]
+                )
+
+            elif block_type == "video":
+                caption = "".join(t["plain_text"] for t in block["video"].get("caption", []))
+                url = (
+                    block["video"]["file"]["url"]
+                    if block["video"]["type"] == "file"
+                    else block["video"]["external"]["url"]
+                )
+                parsed_data = md.link(caption or "Video", url)
+
+            elif block_type == "file":
+                caption = "".join(t["plain_text"] for t in block["file"].get("caption", []))
+                url = (
+                    block["file"]["file"]["url"]
+                    if block["file"]["type"] == "file"
+                    else block["file"]["external"]["url"]
+                )
+                parsed_data = md.link(caption or "File", url)
+
+            elif block_type == "pdf":
+                caption = "".join(t["plain_text"] for t in block["pdf"].get("caption", []))
+                url = (
+                    block["pdf"]["file"]["url"]
+                    if block["pdf"]["type"] == "file"
+                    else block["pdf"]["external"]["url"]
+                )
+                parsed_data = md.link(caption or "PDF", url)
+
+            elif block_type == "bookmark":
+                url = block["bookmark"]["url"]
+                caption = "".join(t["plain_text"] for t in block["bookmark"].get("caption", []))
+                parsed_data = md.link(caption or url, url)
+
+            elif block_type == "embed":
+                url = block["embed"]["url"]
+                caption = "".join(t["plain_text"] for t in block["embed"].get("caption", []))
+                parsed_data = f"<iframe src=\"{url}\" title=\"{caption or 'Embedded content'}\"></iframe>"
+
+            elif block_type == "link_preview":
+                url = block["link_preview"]["url"]
+                parsed_data = md.link(url, url)  # Use URL as both text and link
+
+            elif block_type == "table":
+                rows = []
+                for row in block.get("table", {}).get("rows", []):
+                    cells = []
+                    for cell in row.get("cells", []):
+                        cell_text = "".join(t["plain_text"] for t in cell)
+                        cells.append(cell_text)
+                    rows.append(cells)
+                parsed_data = md.table(rows)
+
+            elif block_type == "column_list":
+                # Handle columns as a container
+                columns = []
+                for child in block.get("children", []):
+                    if child["type"] == "column":
+                        column_content = []
+                        for block in child.get("children", []):
+                            content = await self.block_to_markdown(block)
+                            if content:
+                                column_content.append(content)
+                        columns.append("\n".join(column_content))
+                
+                # Join columns with dividers
+                parsed_data = " | ".join(columns)
+
+            elif block_type == "audio":
+                caption = "".join(t["plain_text"] for t in block["audio"].get("caption", []))
+                url = (
+                    block["audio"]["file"]["url"]
+                    if block["audio"]["type"] == "file"
+                    else block["audio"]["external"]["url"]
+                )
+                parsed_data = md.link(caption or "Audio", url)
+
+            elif block_type == "link_to_page":
+                page_id = block["link_to_page"].get("page_id")
+                database_id = block["link_to_page"].get("database_id")
+                target_id = page_id or database_id
+                
+                if target_id:
+                    try:
+                        target = await self.notion_client.pages.retrieve(page_id=target_id)
+                        title = target.get('properties', {}).get('title', {}).get('title', [{}])[0].get('plain_text', 'Linked page')
+                        parsed_data = md.link(title, target.get('url', f'notion://page/{target_id}'))
+                    except Exception as e:
+                        if self.config.get('debug_mode'):
+                            self.logger.warning(f"Failed to resolve link_to_page: {str(e)}")
+                        parsed_data = md.link("Linked page", f"notion://page/{target_id}")
+                else:
+                    parsed_data = "Invalid page link"
+
+            if self._stats is not None:
+                self._stats['successful_blocks'] += 1
+            return parsed_data
+            
+        except Exception as e:
+            if self.config.get('debug_mode'):
+                self.logger.error(
+                    f"Error processing {block.get('type', 'unknown')} block: {str(e)}",
+                    exc_info=True
+                )
+                if self._stats is not None:
+                    self._stats['errors'].append({
+                        'block_id': block.get('id'),
+                        'block_type': block.get('type'),
+                        'error': str(e)
+                    })
+            raise
 
     async def handle_synced_block(self, block: Dict, depth: int = 0) -> str:
         """Process synced_block by resolving original content"""
@@ -381,6 +498,39 @@ class NotionToMarkdown:
             
         return md_blocks
 
+    def generate_conversion_report(self) -> str:
+        """Generate a summary report of the conversion process.
+        
+        Returns:
+            A formatted string containing conversion statistics and errors
+        """
+        success_rate = (
+            (self._stats['successful_blocks'] / self._stats['total_blocks'] * 100)
+            if self._stats['total_blocks'] > 0 else 0
+        )
+        
+        report = [
+            "Conversion Report",
+            "================",
+            f"Total blocks processed: {self._stats['total_blocks']}",
+            f"Successfully converted: {self._stats['successful_blocks']} ({success_rate:.1f}%)",
+            f"Errors encountered: {len(self._stats['errors'])}",
+            f"Unhandled block types: {', '.join(self._stats['unhandled_types']) or 'None'}"
+        ]
+        
+        if self._stats['errors']:
+            report.extend([
+                "\nDetailed Errors",
+                "---------------"
+            ])
+            for error in self._stats['errors']:
+                report.append(
+                    f"Block {error['block_id']} ({error['block_type']}): "
+                    f"{error['error']}"
+                )
+        
+        return "\n".join(report)
+
     async def page_to_markdown(self, page_id: str, total_pages: Optional[int] = None) -> List[MdBlock]:
         """Convert a Notion page to markdown.
         
@@ -390,9 +540,53 @@ class NotionToMarkdown:
             
         Returns:
             List of markdown blocks
+            
+        Raises:
+            ValueError: If notion_client is not set
+            NotionParseError: If parsing fails
         """
         if not self.notion_client:
             raise ValueError("notion_client is required")
+        
+        try:
+            # Reset stats for new conversion
+            self._stats = {
+                'total_blocks': 0,
+                'successful_blocks': 0,
+                'errors': [],
+                'unhandled_types': set()
+            }
             
-        blocks = await notion.get_block_children(self.notion_client, page_id, total_pages)
-        return await self.blocks_to_markdown(blocks)
+            blocks = await notion.get_block_children(self.notion_client, page_id, total_pages)
+            result = await self.blocks_to_markdown(blocks)
+            
+            # Log conversion report
+            self.logger.info("\n" + self.generate_conversion_report())
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Failed to convert page {page_id}: {str(e)}", exc_info=True)
+            raise
+
+    def get_debug_info(self) -> Optional[Dict]:
+        """Get debug information if debug mode is enabled.
+        
+        Returns:
+            Dict with debug information if debug_mode is True, None otherwise
+        """
+        if not self.config.get('debug_mode') or self._stats is None:
+            return None
+            
+        success_rate = (
+            (self._stats['successful_blocks'] / self._stats['total_blocks'] * 100)
+            if self._stats['total_blocks'] > 0 else 0
+        )
+        
+        return {
+            'total_blocks': self._stats['total_blocks'],
+            'successful_blocks': self._stats['successful_blocks'],
+            'success_rate': f"{success_rate:.1f}%",
+            'errors': self._stats['errors'],
+            'unhandled_types': list(self._stats['unhandled_types'])
+        }
