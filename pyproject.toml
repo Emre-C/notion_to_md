@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "python_notion_to_md"
-version = "0.1.1"
+version = "0.1.2"
 description = "Convert Notion pages to Markdown - Python port of notion-to-md"
 authors = [
   {name = "Emre Coklar", email = "emre.coklar@gmail.com"}
